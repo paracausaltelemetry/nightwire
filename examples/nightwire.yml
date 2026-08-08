@@ -1,0 +1,14 @@
+# Nightwire config: ./install.sh --config examples/nightwire.yml --yes
+# shell: both gives the full Exegol-style autocomplete in Bash and Zsh.
+profile: full
+extras: all
+shell: both
+desktop: auto
+runtime: mise
+browser: proxy
+labs: local
+workspace_dir: ~/ctf
+assets_url:
+dry_run: false
+yes: false
+no_reboot: false

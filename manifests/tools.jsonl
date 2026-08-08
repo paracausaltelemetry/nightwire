@@ -1,0 +1,16 @@
+{"profile":"web","kind":"go","value":"ffufw|github.com/praetorian-inc/ffufw@latest"}
+{"profile":"web","kind":"go","value":"gowitness|github.com/sensepost/gowitness@latest"}
+{"profile":"bugbounty","kind":"go","value":"mapcidr|github.com/projectdiscovery/mapcidr/cmd/mapcidr@latest"}
+{"profile":"bugbounty","kind":"go","value":"proxify|github.com/projectdiscovery/proxify/cmd/proxify@latest"}
+{"profile":"ad","kind":"apt","value":"evil-winrm"}
+{"profile":"ad","kind":"apt","value":"kerbrute"}
+{"profile":"ad","kind":"pipx","value":"netexec"}
+{"profile":"ad","kind":"pipx","value":"bloodhound-python"}
+{"profile":"ad","kind":"pipx","value":"certipy-ad"}
+{"profile":"malware","kind":"apt","value":"inetsim"}
+{"profile":"malware","kind":"pipx","value":"oletools"}
+{"profile":"malware","kind":"pipx","value":"flare-floss"}
+{"profile":"malware","kind":"pipx","value":"vivisect"}
+{"profile":"malware","kind":"pipx","value":"malduck"}
+{"profile":"pwn","kind":"gem","value":"one_gadget"}
+{"profile":"pwn","kind":"gem","value":"seccomp-tools"}

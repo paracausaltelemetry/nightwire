@@ -1,0 +1,9 @@
+# Normalize all text to LF so the bash scripts run on Linux regardless of the
+# platform they were authored on. Shell scripts must never get CRLF.
+* text=auto eol=lf
+*.sh text eol=lf
+bin/nightwire text eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.zip binary

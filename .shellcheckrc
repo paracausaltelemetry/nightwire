@@ -1,0 +1,16 @@
+# Nightwire shellcheck configuration.
+#
+# The codebase is a set of sourced library files that share global variables and
+# delegate work to the target user's shell, so several checks fire false
+# positives when each file is linted in isolation:
+#
+#   SC2155 - `local var="$(cmd)"` is the established style here.
+#   SC2034 - config/args globals are set in one file and used in another.
+#   SC2016 - single-quoted strings deliberately defer expansion to the user/root
+#            shell (ctf_try_user_shell, sudo sh -c) or are literal printf text.
+#   SC2015 - `A && B || C` with a trailing `|| true` is intentional, not if/else.
+#   SC2153 - PROFILE (global) vs profile (local) is deliberate, not a typo.
+disable=SC2155,SC2034,SC2016,SC2015,SC2153
+
+# Follow `source lib/*.sh` so cross-file definitions are understood.
+external-sources=true

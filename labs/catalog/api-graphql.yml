@@ -1,0 +1,14 @@
+services:
+  vampi:
+    image: erev0s/vampi:latest
+    container_name: nightwire-lab-vampi
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"
+
+  dvga:
+    image: dolevf/damn-vulnerable-graphql-application:latest
+    container_name: nightwire-lab-dvga
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5013:5013"

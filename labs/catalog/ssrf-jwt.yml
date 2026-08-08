@@ -1,0 +1,12 @@
+services:
+  ssrf-lab:
+    image: tarunkant/ssrf-lab:latest
+    container_name: nightwire-lab-ssrf
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8084:80"
+
+  jwt-lab:
+    image: ticarpi/jwt_tool:latest
+    container_name: nightwire-lab-jwt-tool
+    command: ["tail", "-f", "/dev/null"]

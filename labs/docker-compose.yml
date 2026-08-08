@@ -1,0 +1,29 @@
+services:
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    container_name: nightwire-lab-juice-shop
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  dvwa:
+    image: vulnerables/web-dvwa:latest
+    container_name: nightwire-lab-dvwa
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:80"
+
+  webgoat:
+    image: webgoat/webgoat:latest
+    container_name: nightwire-lab-webgoat
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8082:8080"
+      - "127.0.0.1:9090:9090"
+
+  mutillidae:
+    image: citizenstig/nowasp:latest
+    container_name: nightwire-lab-mutillidae
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8083:80"

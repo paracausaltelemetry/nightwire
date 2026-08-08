@@ -1,0 +1,29 @@
+# Keep the repo tiny so it clones fast onto a fresh VM. Only source the
+# installer needs at runtime is tracked; everything below is generated locally.
+
+# Logs and temp files
+*.log
+*.tmp
+.cache/
+tmp/
+work/
+
+# Local editor/agent state and config backups
+.claude/
+.vscode/
+.idea/
+*.swp
+*~
+*.nightwire.bak
+
+# Packaging artifacts (release zips + checksums)
+*.zip
+*.zip.sha256
+
+# Offline cache bundles built by `nightwire cache prepare`
+cache/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini

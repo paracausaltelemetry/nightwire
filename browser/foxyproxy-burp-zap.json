@@ -1,0 +1,25 @@
+{
+  "mode": "patterns",
+  "sync": false,
+  "autoBackup": false,
+  "passthrough": "localhost, 127.0.0.1, ::1",
+  "proxies": [
+    {
+      "title": "Burp/ZAP 127.0.0.1:8080",
+      "type": "http",
+      "hostname": "127.0.0.1",
+      "port": 8080,
+      "active": true,
+      "proxyDNS": false,
+      "include": [
+        {
+          "title": "Local labs",
+          "pattern": "http://127.0.0.1/*",
+          "type": "wildcard",
+          "active": true
+        }
+      ],
+      "exclude": []
+    }
+  ]
+}
