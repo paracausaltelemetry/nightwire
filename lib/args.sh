@@ -254,6 +254,9 @@ ctf_load_config_file() {
       *) ctf_warn "Ignoring unknown config key: $key" ;;
     esac
   done <"$path"
+  # A false boolean on the last line leaves a non-zero status from its
+  # `[[ ]] &&` test; without this, set -e aborts the installer here.
+  return 0
 }
 
 ctf_prompt_choice() {

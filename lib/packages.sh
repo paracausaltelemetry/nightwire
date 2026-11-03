@@ -4,9 +4,9 @@ LIGHT_PACKAGES=(
   apt-transport-https ca-certificates curl wget git gnupg lsb-release sudo bash-completion
   build-essential make cmake pkg-config gcc g++ file binutils patchelf strace ltrace
   python3 python3-pip python3-venv pipx ruby perl default-jdk
-  tmux zsh vim neovim nano less man-db unzip zip p7zip-full xz-utils bzip2 tar gzip
+  tmux zsh vim neovim nano less man-db unzip zip p7zip-full 7zip xz-utils bzip2 tar gzip
   jq yq fzf ripgrep fd-find bat tree htop btop zoxide eza tealdeer
-  net-tools iproute2 iputils-ping dnsutils whois traceroute tcpdump nmap masscan openvpn
+  net-tools iproute2 iputils-ping dnsutils bind9-dnsutils whois traceroute tcpdump nmap masscan openvpn
   netcat-openbsd socat openssh-client rsync smbclient ftp tftp-hpa sqlite3 postgresql-client redis-tools rlwrap
   docker.io docker-compose docker-compose-v2
   alacritty rofi flameshot xclip xsel wl-clipboard dconf-cli dbus-x11 libnss3-tools
@@ -91,7 +91,7 @@ CPTS_PACKAGES=(
   snmp snmp-mibs-downloader onesixtyone braa
   default-mysql-client freetds-bin odat
   ipmitool ldap-utils krb5-user
-  dnsutils dnsenum dnsrecon fierce
+  dnsutils bind9-dnsutils dnsenum dnsrecon fierce
   smtp-user-enum swaks
   freerdp3-x11 freerdp2-x11 remmina rdesktop
   evil-winrm netexec enum4linux-ng smbmap
@@ -220,6 +220,11 @@ AD_PIPX_TOOLS=(
   coercer
   ldeep
   adidnsdump
+)
+
+# kerbrute is not packaged on every distro (Kali rolling dropped it).
+AD_GO_TOOLS=(
+  "kerbrute|github.com/ropnop/kerbrute@v1.0.3"
 )
 
 MALWARE_PIPX_TOOLS=(
@@ -364,6 +369,7 @@ ctf_apply_one_extra_profile() {
     ad)
       PROFILE_PACKAGES+=("${AD_PACKAGES[@]}")
       PIPX_TOOLS+=("${AD_PIPX_TOOLS[@]}")
+      GO_TOOLS+=("${AD_GO_TOOLS[@]}")
       ;;
     malware)
       PROFILE_PACKAGES+=("${MALWARE_PACKAGES[@]}")
