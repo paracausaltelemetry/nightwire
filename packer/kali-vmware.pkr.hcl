@@ -39,15 +39,29 @@ variable "repo_url" {
   description = "Repository URL for this bootstrap project."
 }
 
+variable "guest_os_type" {
+  type        = string
+  default     = "debian12-64"
+  description = "VMware guest OS identifier. Use a newer one (for example debian13-64) when your VMware release lists it."
+}
+
+variable "install_args" {
+  type        = string
+  default     = "--config examples/cpts.yml --yes --no-reboot"
+  description = "Arguments passed to install.sh."
+}
+
 source "vmware-iso" "ctf" {
   vm_name          = var.vm_name
-  guest_os_type    = "debian12-64"
+  guest_os_type    = var.guest_os_type
   iso_url          = var.iso_url
   iso_checksum     = var.iso_checksum
   ssh_username     = var.ssh_username
   ssh_password     = var.ssh_password
   ssh_timeout      = "45m"
-  shutdown_command = "echo '${var.ssh_password}' | sudo -S shutdown -P now"
+  # Passwordless sudo is granted for the build only (see the first provisioner)
+  # and removed as part of shutdown, so the password never hits a command line.
+  shutdown_command = "sudo sh -c 'rm -f /etc/sudoers.d/99-packer-build; shutdown -P now'"
   disk_size        = 81920
   memory           = 8192
   cpus             = 4
@@ -57,12 +71,22 @@ source "vmware-iso" "ctf" {
 build {
   sources = ["source.vmware-iso.ctf"]
 
+  # Grant temporary passwordless sudo. The password travels in an env-var file
+  # (use_env_var_file) that Packer redacts in logs, never on a command line.
+  provisioner "shell" {
+    use_env_var_file = true
+    environment_vars = ["SUDO_PASS=${var.ssh_password}"]
+    inline = [
+      "echo \"$SUDO_PASS\" | sudo -S -p '' sh -c 'echo \"${var.ssh_username} ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/99-packer-build && chmod 0440 /etc/sudoers.d/99-packer-build'"
+    ]
+  }
+
   provisioner "shell" {
     inline = [
       "sudo apt-get update",
       "sudo apt-get install -y git curl ca-certificates",
-      "git clone ${var.repo_url} /tmp/nightwire",
-      "cd /tmp/nightwire && sudo ./install.sh --profile full --extras all --runtime mise --yes --no-reboot"
+      "git clone --depth 1 ${var.repo_url} /tmp/nightwire",
+      "cd /tmp/nightwire && sudo ./install.sh ${var.install_args}"
     ]
   }
 }

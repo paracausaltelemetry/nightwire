@@ -191,7 +191,39 @@ export HISTSIZE=100000
 export HISTFILESIZE=200000
 export HISTTIMEFORMAT='%F %T '
 shopt -s histappend checkwinsize globstar cmdhist autocd cdspell dirspell 2>/dev/null || true
-PROMPT_COMMAND="history -a; ${PROMPT_COMMAND:-}"
+PROMPT_COMMAND="_nw_ctx; history -a; ${PROMPT_COMMAND:-}"
+
+# Engagement context: $IP and $TARGET follow `nightwire target`, $LHOST follows
+# tun0. A value you export yourself wins; unset it to follow nightwire again.
+_nw_sync() {
+  local var="$1" new="$2" cur last
+  eval "cur=\${$var:-}; last=\${_NW_LAST_$var:-}"
+  if [ -z "$cur" ] || [ "$cur" = "$last" ]; then
+    if [ -n "$new" ]; then export "$var=$new"; else unset "$var"; fi
+    eval "_NW_LAST_$var=\$new"
+  fi
+}
+_nw_ctx() {
+  # Preserve $? so the prompt still reports the last command's exit status.
+  local ret=$? f="${NIGHTWIRE_STATE:-$HOME/.config/nightwire}/target" k v ip="" host="" a b lhost="" rest
+  if [ -r "$f" ]; then
+    while IFS='=' read -r k v; do
+      case "$k" in IP) ip="$v" ;; HOST) host="$v" ;; esac
+    done <"$f"
+  fi
+  read -r a b lhost rest <<<"$(ip -4 -br addr show tun0 2>/dev/null)"
+  _nw_sync IP "$ip"
+  _nw_sync TARGET "$host"
+  _nw_sync LHOST "${lhost%%/*}"
+  return $ret
+}
+
+# Colored man pages through bat when available.
+if command -v bat >/dev/null 2>&1; then
+  export MANPAGER="sh -c 'col -bx | bat -l man -p'" MANROFFOPT="-c"
+elif command -v batcat >/dev/null 2>&1; then
+  export MANPAGER="sh -c 'col -bx | batcat -l man -p'" MANROFFOPT="-c"
+fi
 
 # ble.sh: fish-style autosuggestions + syntax highlighting for interactive Bash.
 if [[ $- == *i* && -r "$HOME/.local/share/blesh/ble.sh" ]]; then
@@ -225,6 +257,8 @@ alias nwnew='nightwire new'
 alias nwdoctor='nightwire doctor'
 alias nwupdate='nightwire update'
 alias nwlabs='nightwire labs'
+alias nw='tmux new-session -A -s nightwire'
+alias nwlog='nightwire log'
 
 mkcd() { mkdir -p "$1" && cd "$1" || return; }
 
@@ -321,9 +355,43 @@ export LESS="-R"
 export HISTFILE="$HOME/.zsh_history"
 export HISTSIZE=100000
 export SAVEHIST=100000
-setopt append_history share_history inc_append_history hist_ignore_all_dups hist_ignore_space hist_reduce_blanks
+setopt append_history share_history inc_append_history extended_history hist_ignore_all_dups hist_ignore_space hist_reduce_blanks
 setopt autocd auto_pushd pushd_ignore_dups extended_glob interactive_comments no_beep
 setopt complete_in_word always_to_end auto_menu
+
+# Engagement context: $IP and $TARGET follow `nightwire target`, $LHOST follows
+# tun0. A value you export yourself wins; unset it to follow nightwire again.
+_nw_sync() {
+  local var="$1" new="$2" cur last
+  eval "cur=\${$var:-}; last=\${_NW_LAST_$var:-}"
+  if [ -z "$cur" ] || [ "$cur" = "$last" ]; then
+    if [ -n "$new" ]; then export "$var=$new"; else unset "$var"; fi
+    eval "_NW_LAST_$var=\$new"
+  fi
+}
+_nw_ctx() {
+  # Preserve $? so the prompt still reports the last command's exit status.
+  local ret=$? f="${NIGHTWIRE_STATE:-$HOME/.config/nightwire}/target" k v ip="" host="" a b lhost="" rest
+  if [ -r "$f" ]; then
+    while IFS='=' read -r k v; do
+      case "$k" in IP) ip="$v" ;; HOST) host="$v" ;; esac
+    done <"$f"
+  fi
+  read -r a b lhost rest <<<"$(ip -4 -br addr show tun0 2>/dev/null)"
+  _nw_sync IP "$ip"
+  _nw_sync TARGET "$host"
+  _nw_sync LHOST "${lhost%%/*}"
+  return $ret
+}
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _nw_ctx
+
+# Colored man pages through bat when available.
+if command -v bat >/dev/null 2>&1; then
+  export MANPAGER="sh -c 'col -bx | bat -l man -p'" MANROFFOPT="-c"
+elif command -v batcat >/dev/null 2>&1; then
+  export MANPAGER="sh -c 'col -bx | batcat -l man -p'" MANROFFOPT="-c"
+fi
 
 # Oh My Zsh: load the framework (aliases/completions) with the prompt left to
 # Starship. ZSH_THEME is empty on purpose.
@@ -367,6 +435,8 @@ alias nwnew='nightwire new'
 alias nwdoctor='nightwire doctor'
 alias nwupdate='nightwire update'
 alias nwlabs='nightwire labs'
+alias nw='tmux new-session -A -s nightwire'
+alias nwlog='nightwire log'
 
 mkcd() { mkdir -p "$1" && cd "$1" || return; }
 
@@ -505,7 +575,14 @@ ctf_write_starship_config() {
 # Uses Nerd Font glyphs (installed by the bootstrapper). If your terminal is not
 # set to a Nerd Font, set its font to "Hack Nerd Font" or remove this file.
 add_newline = false
-format = "${custom.vpn}$directory$git_branch$git_status$python$nodejs$rust$golang$cmd_duration$line_break$character"
+# The clock leads every prompt so screenshots double as timestamped evidence.
+format = "$time${custom.vpn}${custom.target}$directory$git_branch$git_status$python$nodejs$rust$golang$cmd_duration$line_break$character"
+
+[time]
+disabled = false
+format = "[$time]($style) "
+style = "dimmed white"
+time_format = "%F %T"
 
 [character]
 success_symbol = "[❯](bold green)"
@@ -534,6 +611,14 @@ command = "nightwire _ip tun0"
 when = "ip -o link show tun0"
 description = "Show the tun0 VPN address"
 format = "[vpn $output](bold red) "
+shell = ["bash", "--noprofile", "--norc"]
+
+# Pinned target (nightwire target IP [HOST]).
+[custom.target]
+command = "nightwire _target-ip"
+when = "nightwire _target-ip | grep -q ."
+description = "Show the pinned target"
+format = "[tgt $output](bold yellow) "
 shell = ["bash", "--noprofile", "--norc"]
 EOF
 
@@ -569,11 +654,31 @@ bind -r h select-pane -L
 bind -r j select-pane -D
 bind -r k select-pane -U
 bind -r l select-pane -R
+set -g set-clipboard on
+set -g display-time 2500
+
+# Pane titles show what runs there and a red REC badge while it is being logged.
+set -g pane-border-status top
+set -g pane-border-format ' #{?pane_pipe,#[fg=colour203#,bold]● REC #[default],}#[fg=colour246]#{pane_index}: #{pane_current_command} '
+
+# prefix + S: type into every pane at once. prefix + g: scratch popup shell.
+bind S setw synchronize-panes \; display-message "synchronize-panes #{?synchronize-panes,on,off}"
+bind g display-popup -E -w 80% -h 75% -d "#{pane_current_path}"
+
+# Evidence: every new pane is recorded with timestamps under the workspace
+# _logs/ directory (nightwire log off to disable). prefix + L toggles the
+# current pane; prefix + H saves its full scrollback to the same place.
+set-hook -g session-created 'run-shell -b "nightwire _tmux-autolog #{pane_id}"'
+set-hook -g after-new-window 'run-shell -b "nightwire _tmux-autolog #{pane_id}"'
+set-hook -g after-split-window 'run-shell -b "nightwire _tmux-autolog #{pane_id}"'
+bind L run-shell "nightwire _tmux-autolog '#{pane_id}' toggle"
+bind H run-shell 'f="$(nightwire log dir)/$(date +%F)/history-#{session_name}-w#{window_index}p#{pane_index}-$(date +%H%M%S).log"; mkdir -p "$(dirname "$f")"; tmux capture-pane -J -p -S - -t "#{pane_id}" > "$f"; tmux display-message "saved $f"'
 
 # Session persistence across reboots/snapshots (tpm + resurrect + continuum).
 set -g @plugin 'tmux-plugins/tpm'
 set -g @plugin 'tmux-plugins/tmux-resurrect'
 set -g @plugin 'tmux-plugins/tmux-continuum'
+set -g @plugin 'tmux-plugins/tmux-yank'
 set -g @resurrect-capture-pane-contents 'on'
 set -g @continuum-restore 'on'
 if "test -d ~/.tmux/plugins/tpm" "run '~/.tmux/plugins/tpm/tpm'"
@@ -586,12 +691,11 @@ EOF
 # work on first launch (tpm normally needs an interactive prefix + I).
 ctf_install_tpm() {
   if [[ -d "$TARGET_HOME/.tmux/plugins/tpm" ]]; then
-    ctf_info "tmux plugin manager already installed."
-    return 0
+    ctf_info "tmux plugin manager already installed; fetching any new plugins."
+  else
+    ctf_install_packages git tmux
+    ctf_user_clone tpm https://github.com/tmux-plugins/tpm "$TARGET_HOME/.tmux/plugins/tpm"
   fi
-
-  ctf_install_packages git tmux
-  ctf_user_clone tpm https://github.com/tmux-plugins/tpm "$TARGET_HOME/.tmux/plugins/tpm"
   ctf_try_user_shell '[ -x "$HOME/.tmux/plugins/tpm/bin/install_plugins" ] && "$HOME/.tmux/plugins/tpm/bin/install_plugins" >/dev/null 2>&1 || true'
 }
 

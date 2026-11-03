@@ -59,4 +59,5 @@ ctf_write_tool_lists() {
   ctf_write_root_file "$ASSET_INSTALL_DIR/tool-lists/pipx-tools.txt" "$pipx_lines" 0644 root:root
   ctf_write_root_file "$ASSET_INSTALL_DIR/tool-lists/gem-tools.txt" "$gem_lines" 0644 root:root
   ctf_write_root_file "$ASSET_INSTALL_DIR/workspace-root" "$WORKSPACE_DIR" 0644 root:root
+  ctf_write_root_file "$ASSET_INSTALL_DIR/extras" "$EXTRA_PROFILES" 0644 root:root
 }

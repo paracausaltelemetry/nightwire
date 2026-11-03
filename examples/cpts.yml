@@ -1,0 +1,15 @@
+# HTB CPTS preset: ./install.sh --config examples/cpts.yml --yes
+# Standard base plus service footprinting (cpts), Active Directory (ad) and
+# web application (web) kits. Kali gives the best package coverage.
+profile: standard
+extras: cpts,ad,web
+shell: both
+desktop: auto
+runtime: system
+browser: proxy
+labs: local
+workspace_dir: ~/cpts
+assets_url:
+dry_run: false
+yes: false
+no_reboot: false

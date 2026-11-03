@@ -8,7 +8,7 @@ LIGHT_PACKAGES=(
   jq yq fzf ripgrep fd-find bat tree htop btop zoxide eza tealdeer
   net-tools iproute2 iputils-ping dnsutils whois traceroute tcpdump nmap masscan openvpn
   netcat-openbsd socat openssh-client rsync smbclient ftp tftp-hpa sqlite3 postgresql-client redis-tools rlwrap
-  docker.io docker-compose
+  docker.io docker-compose docker-compose-v2
   alacritty rofi flameshot xclip xsel wl-clipboard dconf-cli dbus-x11 libnss3-tools
   fonts-firacode fonts-hack papirus-icon-theme arc-theme
 )
@@ -79,7 +79,31 @@ CLOUD_PACKAGES=(
 
 AD_PACKAGES=(
   bloodhound neo4j evil-winrm kerbrute ldapdomaindump python3-impacket impacket-scripts
-  responder smbmap enum4linux-ng freerdp2-x11 certipy-ad netexec sliver
+  responder smbmap enum4linux-ng freerdp3-x11 freerdp2-x11 certipy-ad netexec sliver
+  bloodhound-ce-python
+)
+
+# Service footprinting and enumeration clients that back the HTB CPTS path.
+# Combine with the ad and web extras (see examples/cpts.yml).
+CPTS_PACKAGES=(
+  nmap rustscan masscan seclists wordlists
+  smbclient cifs-utils nfs-common rpcbind ftp lftp tnftp
+  snmp snmp-mibs-downloader onesixtyone braa
+  default-mysql-client freetds-bin odat
+  ipmitool ldap-utils krb5-user
+  dnsutils dnsenum dnsrecon fierce
+  smtp-user-enum swaks
+  freerdp3-x11 freerdp2-x11 remmina rdesktop
+  evil-winrm netexec enum4linux-ng smbmap
+  ffuf feroxbuster gobuster wfuzz whatweb wafw00f nikto sqlmap
+  wpscan joomscan cewl
+  hashcat john hydra medusa crowbar
+  proxychains4 sshuttle socat rlwrap chisel ligolo-ng
+  cherrytree flameshot
+)
+
+CPTS_PIPX_TOOLS=(
+  droopescan
 )
 
 MALWARE_PACKAGES=(
@@ -109,8 +133,6 @@ STANDARD_PIPX_TOOLS=(
   frida-tools
   ropper
   updog
-  ciphey
-  pwncat-cs
 )
 
 STANDARD_CARGO_TOOLS=(
@@ -118,16 +140,18 @@ STANDARD_CARGO_TOOLS=(
   "feroxbuster|feroxbuster"
 )
 
+# Go tools are pinned to exact module versions so every build is reproducible.
+# `nightwire update --latest` moves them to upstream @latest deliberately.
 STANDARD_GO_TOOLS=(
-  "subfinder|github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
-  "httpx|github.com/projectdiscovery/httpx/cmd/httpx@latest"
-  "nuclei|github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
-  "katana|github.com/projectdiscovery/katana/cmd/katana@latest"
-  "naabu|github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
-  "anew|github.com/tomnomnom/anew@latest"
-  "gau|github.com/lc/gau/v2/cmd/gau@latest"
-  "waybackurls|github.com/tomnomnom/waybackurls@latest"
-  "pspy|github.com/DominicBreuker/pspy@latest"
+  "subfinder|github.com/projectdiscovery/subfinder/v2/cmd/subfinder@v2.17.0"
+  "httpx|github.com/projectdiscovery/httpx/cmd/httpx@v1.12.0"
+  "nuclei|github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v3.11.1"
+  "katana|github.com/projectdiscovery/katana/cmd/katana@v1.8.0"
+  "naabu|github.com/projectdiscovery/naabu/v2/cmd/naabu@v2.7.0"
+  "anew|github.com/tomnomnom/anew@v0.1.1"
+  "gau|github.com/lc/gau/v2/cmd/gau@v2.2.4"
+  "waybackurls|github.com/tomnomnom/waybackurls@v0.1.0"
+  "pspy|github.com/DominicBreuker/pspy@v1.2.1"
 )
 
 STANDARD_GEM_TOOLS=(
@@ -151,16 +175,16 @@ OSINT_PIPX_TOOLS=(
 )
 
 WEB_GO_TOOLS=(
-  "dalfox|github.com/hahwul/dalfox/v2@latest"
-  "hakrawler|github.com/hakluke/hakrawler@latest"
-  "qsreplace|github.com/tomnomnom/qsreplace@latest"
-  "kxss|github.com/Emoe/kxss@latest"
-  "gowitness|github.com/sensepost/gowitness@latest"
-  "gospider|github.com/jaeles-project/gospider@latest"
-  "unfurl|github.com/tomnomnom/unfurl@latest"
-  "gf|github.com/tomnomnom/gf@latest"
-  "puredns|github.com/d3mondev/puredns/v2@latest"
-  "kr|github.com/assetnote/kiterunner/cmd/kr@latest"
+  "dalfox|github.com/hahwul/dalfox/v2@v2.13.0"
+  "hakrawler|github.com/hakluke/hakrawler@v0.0.0-20260805040537-52a16fe61bd1"
+  "qsreplace|github.com/tomnomnom/qsreplace@v0.0.3"
+  "kxss|github.com/Emoe/kxss@v0.0.0-20260531193025-acb2dc76e840"
+  "gowitness|github.com/sensepost/gowitness@v0.0.0-20261011045312-601c84367aaf"
+  "gospider|github.com/jaeles-project/gospider@v1.1.6"
+  "unfurl|github.com/tomnomnom/unfurl@v0.4.3"
+  "gf|github.com/tomnomnom/gf@v0.0.0-20200618134122-dcd4c361f9f5"
+  "puredns|github.com/d3mondev/puredns/v2@v2.1.1"
+  "kr|github.com/assetnote/kiterunner/cmd/kr@v1.0.2"
 )
 
 WEB_CARGO_TOOLS=(
@@ -168,14 +192,14 @@ WEB_CARGO_TOOLS=(
 )
 
 BUGBOUNTY_GO_TOOLS=(
-  "dnsx|github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
-  "tlsx|github.com/projectdiscovery/tlsx/cmd/tlsx@latest"
-  "uncover|github.com/projectdiscovery/uncover/cmd/uncover@latest"
-  "asnmap|github.com/projectdiscovery/asnmap/cmd/asnmap@latest"
-  "alterx|github.com/projectdiscovery/alterx/cmd/alterx@latest"
-  "interactsh-client|github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest"
-  "notify|github.com/projectdiscovery/notify/cmd/notify@latest"
-  "chaos|github.com/projectdiscovery/chaos-client/cmd/chaos@latest"
+  "dnsx|github.com/projectdiscovery/dnsx/cmd/dnsx@v1.3.1"
+  "tlsx|github.com/projectdiscovery/tlsx/cmd/tlsx@v1.4.4"
+  "uncover|github.com/projectdiscovery/uncover/cmd/uncover@v1.2.1"
+  "asnmap|github.com/projectdiscovery/asnmap/cmd/asnmap@v1.2.0"
+  "alterx|github.com/projectdiscovery/alterx/cmd/alterx@v0.1.0"
+  "interactsh-client|github.com/projectdiscovery/interactsh/cmd/interactsh-client@v1.4.1"
+  "notify|github.com/projectdiscovery/notify/cmd/notify@v1.0.7"
+  "chaos|github.com/projectdiscovery/chaos-client/cmd/chaos@v0.5.2"
 )
 
 PWN_CARGO_TOOLS=(
@@ -188,8 +212,8 @@ PWN_GEM_TOOLS=(
 )
 
 AD_PIPX_TOOLS=(
-  netexec
-  bloodhound-python
+  git+https://github.com/Pennyw0rth/NetExec.git
+  bloodhound-ce
   certipy-ad
   ldapdomaindump
   bloodyAD
@@ -204,10 +228,7 @@ MALWARE_PIPX_TOOLS=(
   vivisect
   malduck
   volatility3
-)
-
-MALWARE_GO_TOOLS=(
-  "capa|github.com/mandiant/capa/cmd/capa@latest"
+  flare-capa
 )
 
 ctf_resolve_profile_packages() {
@@ -270,6 +291,7 @@ ctf_apply_extra_profiles() {
       ctf_apply_one_extra_profile cloud
       ctf_apply_one_extra_profile ad
       ctf_apply_one_extra_profile malware
+      ctf_apply_one_extra_profile cpts
     else
       ctf_apply_one_extra_profile "$profile"
     fi
@@ -295,6 +317,7 @@ ctf_apply_manifest_extras() {
       ctf_apply_manifest_profile cloud
       ctf_apply_manifest_profile ad
       ctf_apply_manifest_profile malware
+      ctf_apply_manifest_profile cpts
     else
       ctf_apply_manifest_profile "$profile"
     fi
@@ -345,7 +368,10 @@ ctf_apply_one_extra_profile() {
     malware)
       PROFILE_PACKAGES+=("${MALWARE_PACKAGES[@]}")
       PIPX_TOOLS+=("${MALWARE_PIPX_TOOLS[@]}")
-      GO_TOOLS+=("${MALWARE_GO_TOOLS[@]}")
+      ;;
+    cpts)
+      PROFILE_PACKAGES+=("${CPTS_PACKAGES[@]}")
+      PIPX_TOOLS+=("${CPTS_PIPX_TOOLS[@]}")
       ;;
   esac
 }
@@ -410,15 +436,21 @@ ctf_install_stegseek() {
 
   ctf_install_packages curl ca-certificates
   local url="https://github.com/RickdeJager/stegseek/releases/download/v0.6/stegseek_0.6-1.deb"
+  local sha256="${STEGSEEK_SHA256:-7218c0e0d0cc81e31678eac6d63d1af46eccd6a0d4a9299e3b68b11e7bfc92f3}"
   local deb="/tmp/nightwire-stegseek.deb"
   ctf_warn "Installing stegseek from its release .deb (fast steghide cracker)."
-  if ctf_run_root sh -c "curl -fsSL '$url' -o '$deb'"; then
-    ctf_wait_for_apt_locks
-    ctf_try_root sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y '$deb'"
-    ctf_run_root rm -f "$deb"
-  else
+  if ! ctf_run_root sh -c "curl -fsSL '$url' -o '$deb'"; then
     ctf_warn "Could not download stegseek; skipping."
+    return 0
   fi
+  if ! ctf_run_root sh -c "printf '%s  %s\n' '$sha256' '$deb' | sha256sum -c -"; then
+    ctf_warn "stegseek checksum mismatch; refusing to install it."
+    ctf_run_root rm -f "$deb"
+    return 0
+  fi
+  ctf_wait_for_apt_locks
+  ctf_try_root sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y '$deb'"
+  ctf_run_root rm -f "$deb"
 }
 
 ctf_user_command_exists() {
@@ -448,9 +480,15 @@ ctf_install_pipx_tools() {
 
   ctf_try_user_shell "python3 -m pipx ensurepath"
 
-  local tool
+  local tool check_name
   for tool in "${PIPX_TOOLS[@]}"; do
-    if ctf_run_user_shell "pipx list --short 2>/dev/null | awk '{print \$1}' | grep -Fxq '$tool'"; then
+    # git+https://.../NetExec.git is listed by pipx under its package name.
+    check_name="$tool"
+    if [[ "$tool" == git+* ]]; then
+      check_name="${tool##*/}"
+      check_name="${check_name%.git}"
+    fi
+    if ctf_run_user_shell "pipx list --short 2>/dev/null | awk '{print \$1}' | grep -Fixq '$check_name'"; then
       ctf_info "pipx tool already installed: $tool"
       continue
     fi
