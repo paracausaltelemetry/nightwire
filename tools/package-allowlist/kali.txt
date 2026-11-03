@@ -1,0 +1,3 @@
+# Packages expected to have no candidate on Kali rolling. Each one is a
+# fallback for older releases; the preferred name is noted.
+freerdp2-x11   # freerdp3-x11 is installed instead

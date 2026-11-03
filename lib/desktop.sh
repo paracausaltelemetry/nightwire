@@ -262,6 +262,9 @@ italic = { family = "Hack Nerd Font", style = "Italic" }
 [selection]
 save_to_clipboard = true
 
+[scrolling]
+history = 100000
+
 [colors.primary]
 background = "#0b0f14"
 foreground = "#d8dee9"

@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly: catch packages that disappear from the distro archives.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n
+        run: |
+          for f in install.sh lib/*.sh bin/nightwire debuggers/*.sh tools/*.sh; do
+            bash -n "$f"
+          done
+      - name: shellcheck
+        run: shellcheck --version && shellcheck -x install.sh lib/*.sh bin/nightwire debuggers/*.sh tools/*.sh
+
+  packages:
+    name: packages (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Kali is the supported CPTS target: missing cpts packages fail the build.
+          - name: kali-rolling
+            image: kalilinux/kali-rolling
+            args: --strict-extras cpts --remote
+          - name: debian-trixie
+            image: debian:trixie
+            args: ""
+          - name: ubuntu-24.04
+            image: ubuntu:24.04
+            args: ""
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install prerequisites
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            ca-certificates curl git procps psmisc
+      - uses: actions/checkout@v4
+      - name: Check package availability
+        run: bash tools/check-packages.sh --no-update ${{ matrix.args }}
+      - name: Dry-run CPTS install
+        run: ./install.sh --config examples/cpts.yml --yes --dry-run --no-reboot

@@ -16,7 +16,10 @@ Usage: nightwire <command> [args]
 
 Commands:
   doctor [--json]         Check core tools, paths, Docker, VMware tools, and templates.
-  update [--upgrade]      Update package metadata and user-level CTF toolchains.
+  update [--upgrade] [--latest]
+                          Update package metadata and user-level toolchains.
+                          Go tools reinstall at their pinned versions; --latest
+                          moves them to upstream @latest.
   reconfigure             Re-apply managed shell/desktop config (refresh after an update).
   new NAME                Create a structured CTF workspace.
   vpn up FILE|down|status Connect/disconnect a lab VPN and show the tun0 address.
@@ -26,6 +29,9 @@ Commands:
   enum [TARGET]           nmap all-ports + service scan into the workspace.
   web URL [WORDLIST]      Content discovery (feroxbuster/ffuf) into the workspace.
   revshell [LHOST [PORT]] Print reverse-shell one-liners (LHOST defaults to tun0).
+  log on|off|status|dir|grep PATTERN
+                          Timestamped evidence logs of every tmux pane.
+  obsidian install|open   Install Obsidian (flatpak) or open the workspace vault.
   paths                   Print important Nightwire paths.
   uninstall [--yes]       Remove nightwire files and restore managed config backups.
   secrets set|get|list|remove
@@ -116,11 +122,17 @@ cmd_vpn() {
       printf 'openvpn started in the background. Check: nightwire vpn status\n'
       ;;
     down)
-      if [[ -f /run/nightwire-vpn.pid ]]; then
-        sudo_if_needed kill "$(cat /run/nightwire-vpn.pid)" 2>/dev/null || true
+      # Only stop the tunnel nightwire started; other OpenVPN sessions are left alone.
+      local pid=""
+      [[ -f /run/nightwire-vpn.pid ]] && pid="$(cat /run/nightwire-vpn.pid 2>/dev/null || true)"
+      if [[ "$pid" =~ ^[0-9]+$ ]] && ps -p "$pid" -o args= 2>/dev/null | grep -q 'nightwire-vpn'; then
+        sudo_if_needed kill "$pid"
+        sudo_if_needed rm -f /run/nightwire-vpn.pid
+        printf 'vpn down\n'
+      else
+        sudo_if_needed rm -f /run/nightwire-vpn.pid 2>/dev/null || true
+        printf 'no nightwire-managed vpn running\n'
       fi
-      sudo_if_needed pkill -f 'openvpn --config' 2>/dev/null || true
-      printf 'vpn down\n'
       ;;
     status | "")
       local tun
@@ -156,11 +168,25 @@ cmd_target() {
         [[ -n "$host" ]] && printf 'HOST=%s\n' "$host"
       } >"$file"
       if [[ -n "$host" ]]; then
-        # Pass ip/host as positional args (not interpolated) and match the host
-        # as a literal whole word, so hostnames cannot inject sed/shell syntax.
+        [[ "$host" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid hostname: $host"
+        # Remove HOST only where it is an exact hostname field; other names on
+        # the same line stay, and a line is dropped only when HOST was its last
+        # name. ip/host are positional args, so nothing is interpolated.
         sudo_if_needed sh -c '
           ip="$1"; host="$2"; tmp="$(mktemp)"
-          grep -Fvw "$host" /etc/hosts > "$tmp" 2>/dev/null || true
+          awk -v h="$host" '\''
+            /^[[:space:]]*(#|$)/ { print; next }
+            {
+              hit = 0; names = 0; out = $1
+              for (i = 2; i <= NF; i++) {
+                if ($i ~ /^#/) { for (; i <= NF; i++) out = out " " $i; break }
+                if ($i == h) { hit = 1; continue }
+                out = out "\t" $i; names++
+              }
+              if (!hit) print
+              else if (names > 0) print out
+            }
+          '\'' /etc/hosts > "$tmp"
           printf "%s\t%s\n" "$ip" "$host" >> "$tmp"
           cat "$tmp" > /etc/hosts
           rm -f "$tmp"
@@ -206,6 +232,123 @@ cmd_tmux_status() {
   [[ -n "$tun" ]] && out="vpn ${tun}"
   [[ -n "$tgt" ]] && out="${out:+$out  }tgt ${tgt}"
   printf '%s' "$out"
+}
+
+# --- Terminal evidence logging ------------------------------------------------
+# Every tmux pane is piped (tmux pipe-pane) into a timestamped, ANSI-stripped
+# log under $WORKSPACE_ROOT/_logs/YYYY-MM-DD/. Turn it off with `nightwire log off`.
+
+autolog_off_file() {
+  printf '%s/autolog-off\n' "$(state_dir)"
+}
+
+autolog_enabled() {
+  [[ ! -e "$(autolog_off_file)" ]]
+}
+
+log_root() {
+  printf '%s/_logs\n' "$WORKSPACE_ROOT"
+}
+
+# Reads pane output on stdin and appends it, one timestamped line at a time.
+cmd_pane_log() {
+  local file="${1:-}"
+  [[ -n "$file" ]] || die "usage: nightwire _pane-log FILE"
+  mkdir -p "$(dirname "$file")"
+  local line
+  sed -u 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/\x1b\][^\x07]*\x07//g; s/\r//g' |
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      printf '%(%F %T)T %s\n' -1 "$line"
+    done >>"$file"
+}
+
+# Start (or with "toggle", flip) logging for one tmux pane.
+cmd_tmux_autolog() {
+  local pane="${1:-}"
+  local mode="${2:-auto}"
+  [[ -n "$pane" ]] && command -v tmux >/dev/null 2>&1 || return 0
+
+  local piping
+  piping="$(tmux display-message -p -t "$pane" '#{pane_pipe}' 2>/dev/null || printf 0)"
+  if [[ "$mode" == "toggle" && "$piping" == 1 ]]; then
+    tmux pipe-pane -t "$pane"
+    tmux display-message "nightwire: logging stopped for this pane"
+    return 0
+  fi
+  [[ "$mode" == "auto" ]] && ! autolog_enabled && return 0
+  [[ "$piping" == 1 ]] && return 0
+
+  local name file
+  name="$(tmux display-message -p -t "$pane" '#{session_name}-w#{window_index}p#{pane_index}' 2>/dev/null || printf pane)"
+  name="${name//[^A-Za-z0-9_.-]/_}"
+  file="$(log_root)/$(date +%F)/${name}-$(date +%H%M%S).log"
+  mkdir -p "$(dirname "$file")"
+  tmux pipe-pane -o -t "$pane" "exec nightwire _pane-log $(printf '%q' "$file")"
+  [[ "$mode" == "toggle" ]] && tmux display-message "nightwire: logging to $file"
+  return 0
+}
+
+cmd_log() {
+  local action="${1:-status}"
+  case "$action" in
+    on)
+      rm -f "$(autolog_off_file)"
+      [[ -n "${TMUX_PANE:-}" ]] && cmd_tmux_autolog "$TMUX_PANE" manual
+      printf 'terminal logging on (new tmux panes log to %s)\n' "$(log_root)"
+      ;;
+    off)
+      mkdir -p "$(state_dir)"
+      : >"$(autolog_off_file)"
+      [[ -n "${TMUX_PANE:-}" ]] && tmux pipe-pane -t "$TMUX_PANE" 2>/dev/null
+      printf 'terminal logging off (existing panes: prefix + L to stop each one)\n'
+      ;;
+    status)
+      if autolog_enabled; then printf 'autolog: on\n'; else printf 'autolog: off\n'; fi
+      printf 'log dir: %s\n' "$(log_root)"
+      if [[ -n "${TMUX_PANE:-}" ]]; then
+        [[ "$(tmux display-message -p '#{pane_pipe}')" == 1 ]] && printf 'this pane: recording\n' || printf 'this pane: not recording\n'
+      else
+        printf 'not inside tmux: start a session with `nw` to record\n'
+      fi
+      ;;
+    dir)
+      log_root
+      ;;
+    grep)
+      shift
+      [[ $# -ge 1 ]] || die "usage: nightwire log grep PATTERN"
+      grep -rn --color=auto -- "$1" "$(log_root)" 2>/dev/null || true
+      ;;
+    *)
+      die "usage: nightwire log on|off|status|dir|grep PATTERN"
+      ;;
+  esac
+}
+
+# --- Notes -------------------------------------------------------------------
+
+cmd_obsidian() {
+  local action="${1:-open}"
+  case "$action" in
+    install)
+      if ! command -v flatpak >/dev/null 2>&1; then
+        sudo_if_needed env DEBIAN_FRONTEND=noninteractive apt-get install -y flatpak
+      fi
+      flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      flatpak install --user -y flathub md.obsidian.Obsidian
+      printf 'Obsidian installed. Open the workspace as a vault: nightwire obsidian open\n'
+      ;;
+    open)
+      need xdg-open
+      local uri
+      uri="obsidian://open?path=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$WORKSPACE_ROOT")"
+      xdg-open "$uri" >/dev/null 2>&1 &
+      printf 'Opening %s in Obsidian (choose "Open folder as vault" on first run).\n' "$WORKSPACE_ROOT"
+      ;;
+    *)
+      die "usage: nightwire obsidian install|open"
+      ;;
+  esac
 }
 
 cmd_reconfigure() {
@@ -330,8 +473,22 @@ shell_feature_present() {
   esac
 }
 
+# Commands the cpts kit is expected to provide (checked by doctor when installed).
+CPTS_COMMANDS=(
+  nxc smbclient rpcclient showmount ldapsearch enum4linux-ng evil-winrm
+  snmpwalk onesixtyone ipmitool mysql odat swaks dnsrecon wpscan ffuf
+  hashcat john hydra proxychains4 sshuttle chisel
+)
+
+cpts_kit_installed() {
+  local extras=""
+  [[ -f "$BASE_DIR/extras" ]] && extras="$(cat "$BASE_DIR/extras" 2>/dev/null || true)"
+  [[ ",$extras," == *",cpts,"* || ",$extras," == *",all,"* ]]
+}
+
 cmd_doctor_json() {
   local commands=(git curl python3 pipx tmux nmap fzf zoxide eza rustscan feroxbuster nuclei subfinder httpx docker nightwire)
+  cpts_kit_installed && commands+=("${CPTS_COMMANDS[@]}")
   local features=(zsh-autosuggestions zsh-syntax-highlighting fzf-tab blesh nerd-font tpm)
   local first=1
   printf '{'
@@ -360,6 +517,7 @@ cmd_doctor_json() {
     "$([[ -d "$BASE_DIR/templates" ]] && printf true || printf false)" \
     "$([[ -f "$BASE_DIR/labs/docker-compose.yml" ]] && printf true || printf false)" \
     "$([[ -f "$BASE_DIR/browser/firefox-proxy-user.js" ]] && printf true || printf false)"
+  printf ',"autolog":%s' "$(autolog_enabled && printf true || printf false)"
   printf '}\n'
 }
 
@@ -412,28 +570,53 @@ cmd_doctor() {
   command -v zoxide >/dev/null 2>&1 && printf '[ok]   zoxide present\n' || printf '[warn] zoxide not found (smart cd)\n'
   command -v eza >/dev/null 2>&1 && printf '[ok]   eza present\n' || printf '[warn] eza not found (icon ls)\n'
 
+  printf '\nEvidence logging\n'
+  autolog_enabled && printf '[ok]   tmux pane autolog on -> %s\n' "$(log_root)" || printf '[warn] tmux pane autolog off (nightwire log on)\n'
+
+  if cpts_kit_installed; then
+    printf '\nCPTS kit\n'
+    for cmd in "${CPTS_COMMANDS[@]}"; do
+      if command -v "$cmd" >/dev/null 2>&1; then
+        printf '[ok]   %s\n' "$cmd"
+      else
+        printf '[miss] %s\n' "$cmd"
+        missing=1
+      fi
+    done
+  fi
+
   return "$missing"
 }
 
+# update_pipe_list LIST_FILE COMMAND [ARGS...]
+# Runs COMMAND ARGS... PACKAGE for each "binary|package" line. With
+# NIGHTWIRE_GO_LATEST=1, pinned Go modules (module@vX.Y.Z) move to @latest.
 update_pipe_list() {
   local list_file="$1"
-  local runner="$2"
+  shift
   local entry binary package
   [[ -f "$list_file" ]] || return 0
   while IFS= read -r entry; do
     [[ -z "$entry" || "${entry:0:1}" == "#" ]] && continue
     binary="${entry%%|*}"
     package="${entry#*|}"
-    printf 'Updating %s...\n' "$binary"
-    bash -lc "$runner '$package'" || printf 'warn: update failed for %s\n' "$entry" >&2
+    if [[ "${NIGHTWIRE_GO_LATEST:-0}" == 1 && "$package" == *@* ]]; then
+      package="${package%@*}@latest"
+    fi
+    printf 'Updating %s (%s)...\n' "$binary" "$package"
+    "$@" "$package" || printf 'warn: update failed for %s\n' "$entry" >&2
   done <"$list_file"
 }
 
 cmd_update() {
-  local do_upgrade=0
-  if [[ "${1:-}" == "--upgrade" ]]; then
-    do_upgrade=1
-  fi
+  local do_upgrade=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --upgrade) do_upgrade=1 ;;
+      --latest) export NIGHTWIRE_GO_LATEST=1 ;;
+      *) die "usage: nightwire update [--upgrade] [--latest]" ;;
+    esac
+  done
 
   if command -v apt-get >/dev/null 2>&1; then
     sudo_if_needed env DEBIAN_FRONTEND=noninteractive apt-get update
@@ -443,8 +626,8 @@ cmd_update() {
   fi
 
   command -v pipx >/dev/null 2>&1 && pipx upgrade-all || true
-  command -v cargo >/dev/null 2>&1 && update_pipe_list "$BASE_DIR/tool-lists/cargo-tools.txt" "cargo install" || true
-  command -v go >/dev/null 2>&1 && update_pipe_list "$BASE_DIR/tool-lists/go-tools.txt" "GOBIN=\"$HOME/go/bin\" go install" || true
+  command -v cargo >/dev/null 2>&1 && update_pipe_list "$BASE_DIR/tool-lists/cargo-tools.txt" cargo install || true
+  command -v go >/dev/null 2>&1 && update_pipe_list "$BASE_DIR/tool-lists/go-tools.txt" env GOBIN="$HOME/go/bin" go install || true
 
   if command -v gem >/dev/null 2>&1 && [[ -f "$BASE_DIR/tool-lists/gem-tools.txt" ]]; then
     while IFS= read -r gem_name; do
@@ -471,10 +654,12 @@ cmd_update() {
 cmd_new() {
   local name="${1:-}"
   [[ -n "$name" ]] || die "usage: nightwire new NAME"
-  [[ "$name" != *"/"* && "$name" != *".."* ]] || die "workspace name must be a simple directory name"
+  # Letters, digits, dot, dash, underscore only: the name is used as a path and
+  # as a sed replacement, where / & \ would break or inject.
+  [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || die "workspace name may only contain letters, digits, '.', '_' and '-'"
 
   local target="$WORKSPACE_ROOT/$name"
-  mkdir -p "$target"/{recon,scans,loot,notes,screenshots,exploit,files,writeup}
+  mkdir -p "$target"/{recon,scans,loot,notes,screenshots,exploit,files,writeup,logs}
   if [[ -d "$BASE_DIR/templates/workspace" ]]; then
     cp -n "$BASE_DIR/templates/workspace/"* "$target/" 2>/dev/null || true
   fi
@@ -649,7 +834,7 @@ cmd_cache() {
         [[ -d "$dir/repos/ble.sh" ]] || git clone --recursive --depth 1 https://github.com/akinomyoga/ble.sh.git "$dir/repos/ble.sh" || printf 'warn: cache clone failed: ble.sh\n' >&2
       fi
       if command -v curl >/dev/null 2>&1; then
-        local nf="${NERD_FONT_NAME:-Hack}" nfv="${NERD_FONT_VERSION:-v3.2.1}"
+        local nf="${NERD_FONT_NAME:-Hack}" nfv="${NERD_FONT_VERSION:-v3.4.0}"
         [[ -f "$dir/fonts/$nf.zip" ]] || curl -fsSL "https://github.com/ryanoasis/nerd-fonts/releases/download/$nfv/$nf.zip" -o "$dir/fonts/$nf.zip" || printf 'warn: cache font download failed: %s\n' "$nf" >&2
       fi
 
@@ -854,6 +1039,10 @@ main() {
     _ip) iface_ip "$@" ;;
     _target-ip) target_ip "$@" ;;
     _tmux-status) cmd_tmux_status "$@" ;;
+    _tmux-autolog) cmd_tmux_autolog "$@" ;;
+    _pane-log) cmd_pane_log "$@" ;;
+    log) cmd_log "$@" ;;
+    obsidian) cmd_obsidian "$@" ;;
     paths) cmd_paths "$@" ;;
     uninstall) cmd_uninstall "$@" ;;
     secrets) cmd_secrets "$@" ;;

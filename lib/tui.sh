@@ -76,7 +76,8 @@ ctf_tui_configure() {
 
   if [[ -z "$EXTRA_PROFILES" ]]; then
     local picks
-    picks="$(ctf_checklist "Extra toolkits" "Toggle focused toolkits (Space to select):" \
+    picks="$(ctf_checklist "Extra toolkits" "Toggle focused toolkits (Space to select). For CPTS, pick cpts + ad + web:" \
+      cpts "HTB CPTS service footprinting kit" off \
       web "Web application testing" off \
       pwn "Binary exploitation" off \
       rev "Reverse engineering" off \

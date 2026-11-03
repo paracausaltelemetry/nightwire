@@ -8,6 +8,10 @@ ctf_validate_install() {
     ctf_validate_commands sqlmap john hashcat binwalk feroxbuster rustscan
   fi
 
+  if ctf_csv_contains "$EXTRA_PROFILES" cpts || ctf_csv_contains "$EXTRA_PROFILES" all; then
+    ctf_validate_commands nxc smbclient ldapsearch enum4linux-ng evil-winrm snmpwalk
+  fi
+
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files vmtoolsd.service >/dev/null 2>&1; then
     if ! systemctl is-active --quiet vmtoolsd; then
       VALIDATION_WARNINGS+=("vmtoolsd service is installed but not active.")

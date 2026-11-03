@@ -7,7 +7,7 @@ Usage: ./install.sh [options]
 Options:
   --config PATH                      Load YAML-style config file before CLI overrides.
   --profile light|standard|full       Base package profile. Interactive menu if omitted.
-  --extras LIST                       Extra profiles: web,pwn,rev,forensics,osint,wireless,bugbounty,cloud,ad,malware,all.
+  --extras LIST                       Extra profiles: web,pwn,rev,forensics,osint,wireless,bugbounty,cloud,ad,malware,cpts,all.
   --shell bash|zsh|both               Shell customization target. Default: both.
   --desktop auto|xfce|gnome|kde|mate|none
                                       Desktop customization target. Default: auto.
@@ -32,6 +32,7 @@ Sections:
 Examples:
   ./install.sh
   ./install.sh --profile standard --extras bugbounty,web --shell both --desktop auto
+  ./install.sh --config examples/cpts.yml --yes
   ./install.sh --profile full --extras all --runtime mise --yes --assets-url https://example.com/assets.tar.gz
 USAGE
 }
@@ -253,6 +254,9 @@ ctf_load_config_file() {
       *) ctf_warn "Ignoring unknown config key: $key" ;;
     esac
   done <"$path"
+  # A false boolean on the last line leaves a non-zero status from its
+  # `[[ ]] &&` test; without this, set -e aborts the installer here.
+  return 0
 }
 
 ctf_prompt_choice() {
@@ -354,8 +358,8 @@ ctf_validate_extra_profiles() {
   IFS=',' read -r -a _ctf_profiles <<<"$profiles"
   for profile in "${_ctf_profiles[@]}"; do
     case "$profile" in
-      web | pwn | rev | forensics | osint | wireless | bugbounty | cloud | ad | malware | all) ;;
-      *) ctf_die "Invalid extra profile '$profile'. Use web, pwn, rev, forensics, osint, wireless, bugbounty, cloud, ad, malware, or all." ;;
+      web | pwn | rev | forensics | osint | wireless | bugbounty | cloud | ad | malware | cpts | all) ;;
+      *) ctf_die "Invalid extra profile '$profile'. Use web, pwn, rev, forensics, osint, wireless, bugbounty, cloud, ad, malware, cpts, or all." ;;
     esac
   done
 }

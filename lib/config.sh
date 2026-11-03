@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 ctf_init_defaults() {
-  NIGHTWIRE_VERSION="0.1.0"
+  NIGHTWIRE_VERSION="0.2.0"
   CONFIG_FILE=""
   PROFILE=""
   EXTRA_PROFILES=""
@@ -47,7 +47,7 @@ ctf_init_defaults() {
 
   # Pinned third-party download versions (auditable; override via env).
   NERD_FONT_NAME="${NERD_FONT_NAME:-Hack}"
-  NERD_FONT_VERSION="${NERD_FONT_VERSION:-v3.2.1}"
+  NERD_FONT_VERSION="${NERD_FONT_VERSION:-v3.4.0}"
   NERD_FONT_SHA256="${NERD_FONT_SHA256:-}"
 
   TARGET_USER=""
